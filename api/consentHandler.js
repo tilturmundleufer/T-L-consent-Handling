@@ -29,7 +29,15 @@ const ALLOWLIST_ROOTS = ALLOWLIST.map((d) =>
 
 const VALID_ACTIONS = ['accept_all', 'reject_all', 'save_selection', 'unknown'];
 
+
 const MAX_BODY_SIZE = 64 * 1024; // 64 KB (best effort)
+
+const IS_PROD =
+  process.env.VERCEL_ENV === 'production' || process.env.NODE_ENV === 'production';
+
+// In Preview/Development we allow local + Vercel preview domains for easier testing.
+const DEV_ALLOWED_HOSTS = ['localhost', '127.0.0.1'];
+const DEV_ALLOWED_SUFFIXES = ['.vercel.app'];
 
 // --- CORS ---
 
@@ -50,6 +58,12 @@ function setCorsHeaders(res, origin) {
 function isHostAllowed(hostname) {
   if (!hostname || typeof hostname !== 'string') return false;
   const host = hostname.toLowerCase().replace(/:\d+$/, ''); // Port entfernen
+
+  // Dev/Preview convenience allowlist (never active in production)
+  if (!IS_PROD) {
+    if (DEV_ALLOWED_HOSTS.includes(host)) return true;
+    if (DEV_ALLOWED_SUFFIXES.some((suf) => host.endsWith(suf))) return true;
+  }
 
   if (ALLOWLIST.includes(host)) return true;
   return ALLOWLIST_ROOTS.some((root) => host === root || host.endsWith('.' + root));
@@ -119,11 +133,16 @@ function validatePayload(raw, req) {
       ? action
       : 'unknown';
 
+  const resolvedDomain = resolveDomain(raw, req);
+  if (resolvedDomain && typeof resolvedDomain === 'object' && resolvedDomain.error) {
+    return { error: resolvedDomain.error };
+  }
+
   return {
     ts: Number.isFinite(raw.ts) ? raw.ts : Date.now(),
     action: validAction,
     consent: {
-      essential: ensureBoolean(consent.essential),
+      essential: true, // essentials are always on
       analytics: ensureBoolean(consent.analytics),
       functional: ensureBoolean(consent.functional),
       marketing: ensureBoolean(consent.marketing),
@@ -134,18 +153,19 @@ function validatePayload(raw, req) {
     consent_uid: typeof raw.consent_uid === 'string' ? raw.consent_uid : null,
     gpc: ensureBoolean(raw.gpc),
     source: typeof raw.source === 'string' ? raw.source : null,
-    domain: resolveDomain(raw, req),
+    domain: resolvedDomain,
   };
 }
 
 function resolveDomain(raw, req) {
   const payloadDomain = raw.domain;
 
-  if (payloadDomain) {
-    if (!isHostAllowed(payloadDomain)) {
+  if (payloadDomain && typeof payloadDomain === 'string') {
+    const clean = payloadDomain.toLowerCase().replace(/:\d+$/, '');
+    if (!isHostAllowed(clean)) {
       return { error: 'domain not in allowlist' };
     }
-    return payloadDomain;
+    return clean;
   }
 
   // Domain aus Origin oder Referer ableiten (Client-Domain, nicht API-Host)
@@ -262,12 +282,6 @@ async function handlePost(req, res, origin) {
     return;
   }
 
-  if (validated.domain && typeof validated.domain === 'object' && validated.domain.error) {
-    setCorsHeaders(res, origin);
-    res.status(403).json({ error: validated.domain.error });
-    return;
-  }
-
   const supabaseUrl = process.env.SUPABASE_URL;
   const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -305,6 +319,10 @@ module.exports = (req, res) => {
   const origin = getAllowedOrigin(req);
 
   if (req.method === 'OPTIONS') {
+    if (!origin) {
+      res.status(403).json({ error: 'Origin not allowed' });
+      return;
+    }
     setCorsHeaders(res, origin);
     res.status(204).end();
     return;
