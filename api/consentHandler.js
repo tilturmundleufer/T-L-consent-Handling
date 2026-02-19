@@ -20,6 +20,7 @@ const ALLOWLIST = [
   'unterkonstruktion.de',
   'www.state-of-mind.co',
   'philia-store.com',
+  'matari.de',
 ];
 
 /** Root-Domains für Subdomain-Matching (z.B. www.state-of-mind.co -> state-of-mind.co) */
